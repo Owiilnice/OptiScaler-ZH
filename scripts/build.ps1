@@ -58,12 +58,19 @@ if (-not (Test-Path $prod)) { throw "找不到构建产物: $prod" }
 New-Item $OutDir -ItemType Directory -Force | Out-Null
 Copy-Item (Join-Path $prod "*") $OutDir -Recurse -Force
 
-# 4. 剔除构建中间产物。
+# 4. 剔除构建中间产物与不该随包发布的东西。
 #    整目录照搬会把转发器的 PDB/LIB/EXP 一起带出去。PDB 里有完整符号表和
 #    构建机的源码路径，对用户没用、还泄漏路径，不该随包发布。
-#    上游的 package_release.ps1 也是这么删的（*.pdb *.lib *.exp *.ilk）。
+#    上游 package_release.ps1 的剔除列表是：
+#        *.exp *.lib *.pdb *.ilk *latewarp* *.asi *nrtrace*
+#    这里原来只对了前四个 —— ASI 插件不该进包（插件由用户自己放），
+#    latewarp / nrtrace 是废弃的实验产物与挂钩 CUDA 驱动的研究探针（会在自身旁边
+#    转储模块），都不该出现。2026-10-30 补齐。
 $junk = @(Get-ChildItem $OutDir -Recurse -File |
-          Where-Object { $_.Extension -in '.pdb', '.lib', '.exp', '.ilk' })
+          Where-Object { $_.Extension -in '.pdb', '.lib', '.exp', '.ilk' -or
+                         $_.Name -like '*latewarp*' -or
+                         $_.Extension -eq '.asi' -or
+                         $_.Name -like '*nrtrace*' })
 foreach ($f in $junk) {
     Write-Host ("  剔除 {0} ({1:N2} MB)" -f $f.Name, ($f.Length / 1MB))
     Remove-Item $f.FullName -Force
@@ -71,9 +78,11 @@ foreach ($f in $junk) {
 
 # 5. 补上游发布包里那些「来自仓库根、不在 x64\Release\a\」的文件。
 #    编译后置事件不拷这些，只搬 a\ 会漏掉。
-#    （对应 package_release.ps1 里的 $sourceFiles + docs + redist。）
+#    列表必须与 package_release.ps1 的 $sourceFiles 逐项对齐 —— 少一个就是静默缺件
+#    （TROUBLESHOOTING.md 从 v0.1.33 起就漏了，27 KB 的排障文档一直没进包）。
 foreach ($f in @('OptiScaler.ini', 'setup_windows.bat', 'setup_linux.sh',
-                 'get_streamline.ps1', 'README.md', 'INSTALL-DLSSNR.md', 'LICENSE')) {
+                 'get_streamline.ps1', 'README.md', 'INSTALL-DLSSNR.md',
+                 'TROUBLESHOOTING.md', 'LICENSE')) {
     $p = Join-Path $SourceDir $f
     if (Test-Path $p) { Copy-Item $p $OutDir -Force }
     else { Write-Host "  (上游没有，跳过) $f" }
@@ -118,6 +127,11 @@ $dll = Join-Path $OutDir "OptiScaler.dll"
 if (-not (Test-Path $dll)) { throw "产物缺 OptiScaler.dll" }
 $font = Join-Path $OutDir "font\wqy-microhei.ttc"
 if (-not (Test-Path $font)) { throw "产物缺 font\wqy-microhei.ttc —— 中文字体会渲染不出来" }
+
+# 上游 $sourceFiles 里每个都必须在（少一个就是静默缺件）
+foreach ($f in @('OptiScaler.ini', 'INSTALL-DLSSNR.md', 'TROUBLESHOOTING.md', 'LICENSE')) {
+    if (-not (Test-Path (Join-Path $OutDir $f))) { throw "产物缺 $f（上游发布包里有）" }
+}
 
 # Streamline 若声明要带，6 个 DLL 一个都不能少（清单见 redist\streamline\manifest.json）
 if ($includeStreamline) {
