@@ -87,6 +87,17 @@ jobs:
             if [ -n "$TAG" ]; then
               # 上游按 tag 开同名分支：v0.1.28 -> release/0.1.28
               CAND="release/${TAG#v}"
+              # hotfix 版本是四段（v0.1.35.1），但分支只有三段（release/0.1.35）。
+              # 不剥这一段的话每次都解析失败、静默回退 main —— 平时能碰巧对（main 头
+              # 就是 release 分支的 merge commit），但一旦 main 又往前走就会同步到
+              # 未发布的代码。先剥最后一段再试。
+              if ! git ls-remote --exit-code --heads "$UPSTREAM_REPO" "$CAND" >/dev/null 2>&1; then
+                CAND3=$(printf '%s' "$CAND" | sed -E 's/\.[0-9]+$//')
+                if [ "$CAND3" != "$CAND" ] && git ls-remote --exit-code --heads "$UPSTREAM_REPO" "$CAND3" >/dev/null 2>&1; then
+                  echo "四段版本号 $TAG，改用分支 $CAND3"
+                  CAND="$CAND3"
+                fi
+              fi
               if git ls-remote --exit-code --heads "$UPSTREAM_REPO" "$CAND" >/dev/null 2>&1; then
                 BR="$CAND"
                 echo "上游最新正式版 $TAG -> 分支 $BR"
