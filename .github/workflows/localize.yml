@@ -321,7 +321,6 @@ jobs:
         # Streamline 默认就带；要出不含它的包加 -SkipStreamline。
         # 注意别写成 -IncludeStreamline $true —— 参数会被当成字符串传进去，绑定直接报错。
         # -F5LowSourceZip：上一步下的官方包，从中提取 F5Low 的 5 个文件；没下到就传空。
-        shell: pwsh
         run: |
           $zip = Get-ChildItem "$env:RUNNER_TEMP/upstream-pkg/*with-dlss-fg.zip" -ErrorAction SilentlyContinue |
                  Select-Object -First 1
