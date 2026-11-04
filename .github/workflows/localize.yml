@@ -295,6 +295,22 @@ jobs:
         shell: bash
         run: python scripts/apply_patch.py . --report apply-report.json
 
+      - name: 取上游发布包（提取 F5Low 帧生成器）
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UP_TAG: ${{ needs.sync.outputs.tag }}
+        # v0.1.36 起上游包里有 F5Low 帧生成器（OptiScaler\plugins\f5low.dll）与
+        # libxess_fg.dll 1.3.4.95，而那个 kit 在独立仓库、本仓库没有。
+        # 这里下官方包，build.ps1 从中提取那 5 个文件。
+        # 下载失败不阻断发版：build.ps1 会警告并出一个不含 F5Low 的包。
+        continue-on-error: true
+        run: |
+          mkdir -p "$RUNNER_TEMP/upstream-pkg"
+          gh release download "$UP_TAG" --repo "$UPSTREAM_REPO" \
+            --pattern "*with-dlss-fg.zip" --dir "$RUNNER_TEMP/upstream-pkg" --clobber
+          ls -la "$RUNNER_TEMP/upstream-pkg"
+
       - name: 加入 MSBuild
         uses: microsoft/setup-msbuild@v2
 
@@ -304,7 +320,15 @@ jobs:
         # 上游官方包也带，release notes 写明「NVIDIA's DLSS frame generation files included in the zip」。
         # Streamline 默认就带；要出不含它的包加 -SkipStreamline。
         # 注意别写成 -IncludeStreamline $true —— 参数会被当成字符串传进去，绑定直接报错。
-        run: pwsh scripts/build.ps1 -SourceDir "$env:GITHUB_WORKSPACE" -OutDir "$env:GITHUB_WORKSPACE/dist/ZH" -AcceptNvidiaLicenses
+        # -F5LowSourceZip：上一步下的官方包，从中提取 F5Low 的 5 个文件；没下到就传空。
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem "$env:RUNNER_TEMP/upstream-pkg/*with-dlss-fg.zip" -ErrorAction SilentlyContinue |
+                 Select-Object -First 1
+          if (-not $zip) { Write-Warning "没拿到上游包，本版不会有 F5Low 帧生成器" }
+          $extra = @{}
+          if ($zip) { $extra['F5LowSourceZip'] = $zip.FullName }
+          pwsh scripts/build.ps1 -SourceDir "$env:GITHUB_WORKSPACE" -OutDir "$env:GITHUB_WORKSPACE/dist/ZH" -AcceptNvidiaLicenses @extra
 
       - name: 打包 7z
         shell: pwsh

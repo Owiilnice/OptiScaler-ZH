@@ -17,7 +17,10 @@ param(
     # 要出不含它的包就传 -SkipStreamline。
     [switch]$SkipStreamline,
     # 分发 NVIDIA 的 DLL 需要显式同意其许可；不给就拒绝打包（与上游行为一致）。
-    [switch]$AcceptNvidiaLicenses
+    [switch]$AcceptNvidiaLicenses,
+    # 上游官方发布包（*with-dlss-fg.zip）。v0.1.36 起包里有 F5Low 帧生成器与
+    # libxess_fg 1.3.4.95，本仓库没有那个 kit，只能从这里提取。不给则跳过并警告。
+    [string]$F5LowSourceZip = ""
 )
 
 $ErrorActionPreference = 'Stop'
@@ -122,6 +125,49 @@ if ($includeStreamline) {
     & (Join-Path $SourceDir 'get_streamline.ps1') -Destination $slDir -AcceptNvidiaLicenses
 }
 
+# 5.6 F5Low 帧生成器（v0.1.36 新增）。
+#
+#     上游 package_release.ps1 从一个独立仓库的 kit（f5low-kit-<ver>.zip，git 忽略的
+#     external\f5low）取这些文件，并用 kit_hashes.txt + Intel 签名做严格校验：
+#       f5low.dll            -> OptiScaler\plugins\（OptiScaler 默认 [Plugins] Path）
+#       libxess_fg.dll       -> OptiScaler\libxess_fg.dll，替换掉 MSBuild 从
+#                               external\xess\bin 拷来的 1.3.1.78（kit 里是 1.3.4.95）
+#       f5low_LICENSE.txt / f5low_README-KIT.txt / f5low_zstd_LICENSE.txt -> Licenses\
+#
+#     我们的 CI 拿不到 kit（它不在本仓库），所以改成从**上游官方发布包**里提取这 5 个
+#     文件 —— 上游包本身就是经过它那套校验之后打出来的。没给 -F5LowSourceZip 就警告并
+#     继续（包会缺 F5Low，但其余功能正常）。
+if ($F5LowSourceZip) {
+    if (-not (Test-Path -LiteralPath $F5LowSourceZip)) {
+        throw "找不到 F5Low 源包: $F5LowSourceZip"
+    }
+
+    Write-Host "取 F5Low 帧生成器（从上游发布包提取）..."
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $f5map = [ordered]@{
+        'OptiScaler/plugins/f5low.dll'      = 'OptiScaler\plugins\f5low.dll'
+        'OptiScaler/libxess_fg.dll'         = 'OptiScaler\libxess_fg.dll'
+        'Licenses/f5low_LICENSE.txt'        = 'Licenses\f5low_LICENSE.txt'
+        'Licenses/f5low_README-KIT.txt'     = 'Licenses\f5low_README-KIT.txt'
+        'Licenses/f5low_zstd_LICENSE.txt'   = 'Licenses\f5low_zstd_LICENSE.txt'
+    }
+    $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $F5LowSourceZip).ProviderPath)
+    try {
+        foreach ($entry in $f5map.Keys) {
+            $e = $zip.GetEntry($entry)
+            if (-not $e) { throw "上游包里缺 $entry —— 上游可能改了 F5Low 的打包布局" }
+            $dest = Join-Path $OutDir $f5map[$entry]
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($e, $dest, $true)
+            Write-Host ("  F5Low: {0} ({1:N0} 字节)" -f $f5map[$entry], $e.Length)
+        }
+    } finally {
+        $zip.Dispose()
+    }
+} else {
+    Write-Warning "未提供 -F5LowSourceZip：包内不会有 F5Low 帧生成器（OptiScaler\plugins\f5low.dll）与 libxess_fg 1.3.4.95"
+}
+
 # 6. 自检：汉化版的两个标志物必须在产物里，否则说明补丁没生效就打包了
 $dll = Join-Path $OutDir "OptiScaler.dll"
 if (-not (Test-Path $dll)) { throw "产物缺 OptiScaler.dll" }
@@ -144,6 +190,17 @@ if ($includeStreamline) {
     Write-Host "Streamline: OptiScaler\streamline\ 下 6 个 DLL 齐全"
 } else {
     Write-Host "Streamline: 按 -SkipStreamline 跳过（包内不会有 DLSS-G 输出运行时）"
+}
+
+# F5Low 若声明要带，5 个文件一个都不能少
+if ($F5LowSourceZip) {
+    foreach ($rel in @('OptiScaler\plugins\f5low.dll', 'OptiScaler\libxess_fg.dll',
+                       'Licenses\f5low_LICENSE.txt', 'Licenses\f5low_README-KIT.txt',
+                       'Licenses\f5low_zstd_LICENSE.txt')) {
+        if (-not (Test-Path (Join-Path $OutDir $rel))) { throw "产物缺 $rel" }
+    }
+    $intel = (Get-Item (Join-Path $OutDir 'OptiScaler\libxess_fg.dll')).VersionInfo.FileVersion
+    Write-Host "F5Low: 5 个文件齐全，libxess_fg.dll = $intel"
 }
 
 # 7. 生成 SHA256SUMS.txt（上游发布包里也有，用于校验下载完整性）。
